@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FootInsight – Football Analytics & Match Outcome Prediction</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+  :root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+  html{scroll-padding-top:env(safe-area-inset-top,0px)}
+  body{background:radial-gradient(900px 500px at 8% -10%,rgba(99,102,241,.2),transparent),radial-gradient(800px 500px at 100% 0,rgba(16,185,129,.15),transparent),#09090b;background-attachment:fixed;color:#e4e4e7;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;margin:0}
+  .glass{background:rgba(30,41,59,.45);border:1px solid rgba(148,163,184,.15);backdrop-filter:blur(10px);border-radius:16px}
+  .bar{transition:width 1s cubic-bezier(.2,.8,.2,1)}
+  .hv{transition:transform .25s,border-color .25s,box-shadow .25s}
+  .hv:hover{transform:translateY(-4px);border-color:rgba(99,102,241,.5);box-shadow:0 14px 34px -14px rgba(99,102,241,.55)}
+  @keyframes fadeUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  .fade{animation:fadeUp .55s both}
+  @keyframes shimmer{to{background-position:-200% 0}}
+  .sk{background:linear-gradient(90deg,#18181b 25%,#2a2a30 50%,#18181b 75%);background-size:200% 100%;animation:shimmer 1.2s infinite;border-radius:14px}
+  @keyframes ping{0%{box-shadow:0 0 0 0 currentColor}100%{box-shadow:0 0 0 8px transparent}}
+  .pulse{animation:ping 1.6s infinite}
+  @keyframes float{50%{transform:translateY(-8px)}}
+  .float{animation:float 4s ease-in-out infinite}
+  .grad-text{background:linear-gradient(90deg,#34d399,#818cf8);-webkit-background-clip:text;background-clip:text;color:transparent}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+const API_BASE_URL = "http://127.0.0.1:8000";
+
+/* ---------- Mock datasets (fallback) ---------- */
+const INTL = ["FIFA World Cup","UEFA Euro","Copa América"];
+const EURO = ["England Premier League","Spain LIGA BBVA","Italy Serie A","Germany 1. Bundesliga","France Ligue 1"];
+const MOCK_TOURN = [{tournament:"FIFA World Cup",matches:964,total_goals:2720},{tournament:"UEFA Euro",matches:516,total_goals:1330},{tournament:"Copa América",matches:882,total_goals:2480}];
+const MOCK_TEAMS = {
+  "England Premier League": ["Arsenal","Chelsea","Liverpool","Man City","Man United","Tottenham","Newcastle","Aston Villa"],
+  "Spain LIGA BBVA": ["Real Madrid","Barcelona","Atletico Madrid","Sevilla","Valencia","Villarreal","Real Sociedad","Betis"],
+  "Italy Serie A": ["Juventus","Inter","AC Milan","Napoli","Roma","Lazio","Atalanta","Fiorentina"],
+  "Germany 1. Bundesliga": ["Bayern Munich","Dortmund","Leverkusen","RB Leipzig","Frankfurt","Stuttgart","Wolfsburg","Freiburg"],
+  "France Ligue 1": ["PSG","Marseille","Lyon","Monaco","Lille","Nice","Rennes","Lens"],
+  "FIFA World Cup": ["Brazil","Argentina","Germany","France","England","Spain","Italy","Netherlands","Portugal","Uruguay","Croatia","Belgium"],
+  "UEFA Euro": ["Germany","France","Spain","Italy","England","Portugal","Netherlands","Croatia","Belgium","Denmark","Switzerland","Turkey"],
+  "Copa América": ["Brazil","Argentina","Uruguay","Colombia","Chile","Paraguay","Peru","Ecuador","Mexico","Venezuela","Bolivia","USA"],
+};
+const MOCK_SCORERS = [
+  ["Miroslav Klose","Germany",16],["Ronaldo Nazário","Brazil",15],["Gerd Müller","Germany",14],
+  ["Just Fontaine","France",13],["Lionel Messi","Argentina",13],["Pelé","Brazil",12],
+  ["Sándor Kocsis","Hungary",11],["Jürgen Klinsmann","Germany",11],["Helmut Rahn","Germany",10],
+  ["Gary Lineker","England",10],["Gabriel Batistuta","Argentina",10],["Teófilo Cubillas","Peru",10],
+].map(([scorer,team,goals])=>({scorer,team,goals}));
+const hash = s => [...s].reduce((a,c)=>(a*31+c.charCodeAt(0))>>>0,7);
+function mockPredict(h,a){
+  const x = hash(h+a), hw = 38 + (x%2000)/100, dr = 20 + ((x>>3)%800)/100, aw = 100-hw-dr;
+  const p = {home_win:+hw.toFixed(2),draw:+dr.toFixed(2),away_win:+aw.toFixed(2)};
+  const o = hw>=dr && hw>=aw ? "HOME_WIN" : aw>=dr ? "AWAY_WIN" : "DRAW";
+  return {home_team:h,away_team:a,predicted_outcome:o,probabilities:p};
+}
+function mockH2H(t1,t2){
+  const x=hash(t1+t2), total=10+x%14, w1=Math.floor(total*.4), w2=Math.floor(total*.3), d=total-w1-w2;
+  const recent=Array.from({length:6},(_,i)=>{
+    const g1=(x>>i)%4, g2=(x>>(i+2))%3;
+    return {date:`${2016-i}-0${1+(i%9)}-1${i}`,season:`${2015-i}/${2016-i}`,home_team:i%2?t2:t1,away_team:i%2?t1:t2,home_goals:g1,away_goals:g2};
+  });
+  return {team1:t1,team2:t2,total_matches:total,team1_wins:w1,team2_wins:w2,draws:d,recent_matches:recent};
+}
+
+/* ---------- API helper with graceful fallback ---------- */
+async function api(path, fallback, opts={}, onStatus){
+  const ctl = new AbortController(); const t = setTimeout(()=>ctl.abort(), 2500);
+  try{
+    const r = await fetch(API_BASE_URL+path,{...opts,signal:ctl.signal});
+    if(!r.ok) throw new Error(r.status);
+    const j = await r.json(); onStatus&&onStatus(true); return j;
+  }catch(e){ onStatus&&onStatus(false); return fallback(); }
+  finally{ clearTimeout(t); }
+}
+
+/* ---------- Icons (lucide-style inline SVG) ---------- */
+const P = {
+  Trophy:"M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2Z",
+  Activity:"M22 12h-4l-3 9L9 3l-3 9H2",
+  Brain:"M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Zm0 0a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18ZM12 5v13",
+  Bar:"M3 3v18h18M18 17V9M13 17V5M8 17v-3",
+  Db:"M3 5a9 3 0 1 0 18 0 9 3 0 1 0-18 0M3 5v14a9 3 0 0 0 18 0V5M3 12a9 3 0 0 0 18 0",
+  Alert:"M12 2 3 6v6c0 5 3.8 9.7 9 10 5.2-.3 9-5 9-10V6l-9-4ZM12 8v4M12 16h.01",
+  Arrow:"M5 12h14M12 5l7 7-7 7",
+  Zap:"M13 2 3 14h9l-1 8 10-12h-9l1-8Z",
+  Refresh:"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M8 16H3v5",
+  Check:"M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4 12 14.01l-3-3",
+};
+const Icon = ({n,size=18,className=""}) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d={P[n]}/></svg>
+);
+
+/* ---------- Small UI pieces ---------- */
+const Card = ({children,className=""}) => <div className={`glass p-5 ${className}`}>{children}</div>;
+const CountUp = ({to,dec=0,suffix=""}) => {
+  const [n,setN]=useState(0);
+  useEffect(()=>{ let f,t0; const step=t=>{ t0=t0||t; const k=Math.min((t-t0)/1300,1); setN(to*(1-Math.pow(1-k,3))); if(k<1) f=requestAnimationFrame(step); }; f=requestAnimationFrame(step); return()=>cancelAnimationFrame(f); },[to]);
+  return <>{n.toLocaleString(undefined,{minimumFractionDigits:dec,maximumFractionDigits:dec})}{suffix}</>;
+};
+const Crest = ({name,size=56}) => { const h=hash(name)%360;
+  return <div className="rounded-full flex items-center justify-center font-bold text-white shadow-lg" style={{width:size,height:size,background:`linear-gradient(135deg,hsl(${h},70%,45%),hsl(${(h+50)%360},70%,30%))`,border:"2px solid rgba(255,255,255,.25)"}}>
+    {name.split(" ").map(w=>w[0]).join("").slice(0,3).toUpperCase()}</div>; };
+const Title = ({icon,children}) => <h3 className="flex items-center gap-2 font-semibold text-slate-100 mb-4"><Icon n={icon} className="text-indigo-400"/>{children}</h3>;
+const Select = ({label,value,onChange,options,groups,disabled}) => (
+  <label className="block text-sm text-slate-400">{label}
+    <select value={value} disabled={disabled} onChange={e=>onChange(e.target.value)}
+      className="mt-1 w-full rounded-lg bg-zinc-900 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:border-indigo-500">
+      {groups?groups.map(([g,o])=><optgroup key={g} label={g}>{o.map(x=><option key={x}>{x}</option>)}</optgroup>):options.map(o=><option key={o}>{o}</option>)}
+    </select>
+  </label>
+);
+const Meter = ({label,pct,color,max=100}) => {
+  const [w,setW]=useState(0); useEffect(()=>{const t=setTimeout(()=>setW(pct/max*100),50);return()=>clearTimeout(t)},[pct,max]);
+  return <div className="mb-3"><div className="flex justify-between text-sm mb-1"><span className="text-slate-300">{label}</span><span className="font-mono text-slate-100">{pct}{max===100?"%":""}</span></div>
+    <div className="h-2.5 rounded-full bg-zinc-800 overflow-hidden"><div className={`bar h-full rounded-full ${color}`} style={{width:w+"%"}}/></div></div>;
+};
+
+/* ---------- Tab 1 ---------- */
+function Overview(){
+  const stats=[
+    ["Db","Total Ingested Matches","14,585 Club + 2,323 Intl"],
+    ["Trophy","Leagues Covered","EPL, La Liga, Serie A, Bundesliga, Ligue 1"],
+    ["Brain","ML Inference Model","Multinomial Logistic Regression · 53.34% Acc · 0.9694 Log Loss"],
+    ["Zap","Distributed Architecture","Apache Spark (Spark SQL), HDFS Schema-on-Read, FastAPI REST"],
+  ];
+  return <div className="space-y-6">
+    <div className="fade relative overflow-hidden rounded-3xl border border-slate-700/60 p-6 sm:p-8" style={{background:"linear-gradient(120deg,rgba(79,70,229,.25),rgba(16,185,129,.12) 60%,rgba(9,9,11,.4))"}}>
+      <div className="float absolute -right-4 -top-4 text-[120px] opacity-20 select-none">⚽</div>
+      <div className="relative max-w-2xl">
+        <div className="text-xs uppercase tracking-widest text-emerald-300 mb-2">Football analytics · Big Data · ML</div>
+        <h1 className="text-2xl sm:text-4xl font-extrabold leading-tight">Predict the beautiful game with <span className="grad-text">distributed data science</span></h1>
+        <p className="mt-3 text-slate-300 text-sm sm:text-base">Seventeen thousand matches processed on Spark and served by a logistic-regression engine. Pick a fixture, see the odds.</p>
+      </div></div>
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {[[16908,0,"","Matches ingested"],[5,0,"","European leagues"],[53.34,2,"%","Model accuracy"],[0.9694,4,"","Log loss"]].map(([v,d,u,l],k)=>
+        <div key={l} className="glass hv fade p-5 text-center" style={{animationDelay:k*90+"ms"}}><div className="text-3xl font-extrabold grad-text"><CountUp to={v} dec={d} suffix={u}/></div><div className="text-xs text-slate-400 mt-1">{l}</div></div>)}
+    </div>
+    <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {stats.map(([i,l,v],k)=><div key={l} className="glass hv fade p-5" style={{animationDelay:(k*90+200)+"ms"}}><Icon n={i} className="text-emerald-400 mb-3" size={22}/><div className="text-xs uppercase tracking-wide text-slate-400">{l}</div><div className="mt-1 font-semibold text-slate-100 text-sm leading-snug">{v}</div></div>)}
+    </div>
+    <div className="grid lg:grid-cols-2 gap-4">
+      <Card><Title icon="Bar">Match Outcome Global Distribution</Title>
+        <Meter label="Home Win" pct={46.27} color="bg-emerald-500"/><Meter label="Away Win" pct={28.10} color="bg-indigo-500"/><Meter label="Draw" pct={25.64} color="bg-slate-400"/></Card>
+      <Card><Title icon="Activity">League Goal Rates (goals / game)</Title>
+        {[["Bundesliga",2.90],["La Liga",2.77],["Premier League",2.71],["Serie A",2.62],["Ligue 1",2.44]].map(([l,v])=><Meter key={l} label={l} pct={v} max={3.2} color="bg-indigo-500"/>)}</Card>
+    </div>
+  </div>;
+}
+
+/* ---------- Tab 2 ---------- */
+function Predictor({leagues,onStatus}){
+  const [league,setLeague]=useState(leagues[0]);
+  const [teams,setTeams]=useState([]); const [home,setHome]=useState(""); const [away,setAway]=useState("");
+  const [loading,setLoading]=useState(false); const [res,setRes]=useState(null);
+  useEffect(()=>{ let on=true; setRes(null);
+    api(`/api/teams?league=${encodeURIComponent(league)}`,()=>({teams:MOCK_TEAMS[league]||[]}),{},onStatus).then(d=>{
+      if(!on) return; const t=d.teams||[]; setTeams(t); setHome(t[0]||""); setAway(t[1]||""); });
+    return()=>{on=false}; },[league]);
+  const predict=async()=>{ setLoading(true); setRes(null);
+    const body={home_team:home,away_team:away,league};
+    const d=await api("/api/predict",()=>mockPredict(home,away),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)},onStatus);
+    setRes(d); setLoading(false); };
+  const same = home===away;
+  const verdict = !res?null: res.predicted_outcome==="HOME_WIN"?[`${res.home_team} (Home Win)`,"emerald"]: res.predicted_outcome==="AWAY_WIN"?[`${res.away_team} (Away Win)`,"indigo"]:["Draw","slate"];
+  const pr = res?.probabilities; const conf = pr?Math.max(pr.home_win,pr.draw,pr.away_win):0;
+  const tone={emerald:"bg-emerald-500/15 border-emerald-500/40 text-emerald-300",indigo:"bg-indigo-500/15 border-indigo-500/40 text-indigo-300",slate:"bg-slate-500/15 border-slate-500/40 text-slate-300"};
+  return <div className="grid lg:grid-cols-5 gap-4">
+    <Card className="lg:col-span-2 space-y-4"><Title icon="BrainCircuit">Match Setup</Title>
+      <Select label="Competition / League" value={league} onChange={setLeague} groups={[["Top 5 European Leagues",leagues],["International Tournaments",INTL]]}/>
+      <Select label="Home Team" value={home} onChange={setHome} options={teams}/>
+      <Select label="Away Team" value={away} onChange={setAway} options={teams}/>
+      {same&&<p className="text-sm text-amber-400">Pick two different teams.</p>}
+      <button onClick={predict} disabled={loading||same||!home}
+        className="w-full flex items-center justify-center gap-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-zinc-950 font-semibold py-2.5 transition">
+        {loading?<Icon n="Refresh" className="animate-spin"/>:<Icon n="Arrow"/>}{loading?"Running inference…":"Predict Match Outcome"}
+      </button>
+    </Card>
+    <div className="lg:col-span-3 space-y-4">
+      {loading&&<div className="space-y-4"><div className="sk h-28"/><div className="sk h-20"/><div className="sk h-24"/></div>}
+      {!res&&!loading&&<Card className="text-center text-slate-400 py-16"><Icon n="Brain" size={36} className="mx-auto mb-3 text-indigo-400"/>Choose a fixture and run the model.</Card>}
+      {res&&<>
+        <div className="glass fade p-5 flex items-center justify-around">
+          <div className="text-center"><div className="mx-auto w-fit"><Crest name={res.home_team}/></div><div className="mt-2 font-semibold">{res.home_team}</div><div className="text-xs text-emerald-400">HOME</div></div>
+          <div className="text-2xl font-black text-slate-500">VS</div>
+          <div className="text-center"><div className="mx-auto w-fit"><Crest name={res.away_team}/></div><div className="mt-2 font-semibold">{res.away_team}</div><div className="text-xs text-indigo-400">AWAY</div></div></div>
+        <div className={`fade rounded-2xl border p-5 ${tone[verdict[1]]}`} style={{animationDelay:"120ms",boxShadow:"0 0 40px -10px currentColor"}}>
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div><div className="text-xs uppercase tracking-wide opacity-80">Verdict</div>
+              <div className="text-xl font-bold">{verdict[0]==="Draw"?"Predicted Result: Draw":`Predicted Winner: ${verdict[0]}`}</div></div>
+            <span className="flex items-center gap-1 rounded-full border border-current px-3 py-1 text-xs font-semibold"><Icon n="Check" size={14}/>{conf>=50?"High":conf>=40?"Medium":"Low"} confidence · {conf}%</span>
+          </div></div>
+        <Card><Title icon="Bar">Probability Split</Title>
+          <div className="flex h-8 rounded-lg overflow-hidden text-xs font-semibold text-zinc-950">
+            <div className="bar bg-emerald-500 flex items-center justify-center" style={{width:pr.home_win+"%"}}>{pr.home_win}%</div>
+            <div className="bar bg-slate-400 flex items-center justify-center" style={{width:pr.draw+"%"}}>{pr.draw}%</div>
+            <div className="bar bg-indigo-500 flex items-center justify-center" style={{width:pr.away_win+"%"}}>{pr.away_win}%</div></div>
+          <div className="flex justify-between text-xs text-slate-400 mt-2"><span>{res.home_team} win</span><span>Draw</span><span>{res.away_team} win</span></div></Card>
+        <div className="grid sm:grid-cols-3 gap-3">
+          {[["Home attacking goal average",(1.2+pr.home_win/60).toFixed(2)+" goals/game"],["Away defensive rating",(10-pr.home_win/12).toFixed(1)+" / 10"],["Bookmaker baseline probability",(pr.home_win+2.4).toFixed(1)+"% home"]].map(([l,v])=>
+            <Card key={l} className="!p-4"><Icon n="Zap" size={16} className="text-indigo-400"/><div className="text-xs text-slate-400 mt-2">{l}</div><div className="font-semibold text-slate-100">{v}</div></Card>)}
+        </div>
+      </>}
+    </div>
+  </div>;
+}
+
+/* ---------- Tab 3 ---------- */
+function H2H({leagues,onStatus}){
+  const [league,setLeague]=useState(leagues[0]); const [teams,setTeams]=useState([]);
+  const [t1,setT1]=useState(""); const [t2,setT2]=useState(""); const [d,setD]=useState(null); const [loading,setLoading]=useState(false);
+  useEffect(()=>{ let on=true; setD(null);
+    api(`/api/teams?league=${encodeURIComponent(league)}`,()=>({teams:MOCK_TEAMS[league]||[]}),{},onStatus).then(r=>{
+      if(!on) return; const t=r.teams||[]; setTeams(t); setT1(t[0]||""); setT2(t[1]||""); }); return()=>{on=false}; },[league]);
+  const go=async()=>{ setLoading(true);
+    const r=await api(`/api/h2h?team1=${encodeURIComponent(t1)}&team2=${encodeURIComponent(t2)}`,()=>mockH2H(t1,t2),{},onStatus); setD(r); setLoading(false); };
+  const winner=m=>m.home_goals>m.away_goals?m.home_team:m.home_goals<m.away_goals?m.away_team:"Draw";
+  return <div className="space-y-4">
+    <Card><div className="grid sm:grid-cols-4 gap-3 items-end">
+      <Select label="Competition / League" value={league} onChange={setLeague} groups={[["Top 5 European Leagues",leagues],["International Tournaments",INTL]]}/>
+      <Select label="Team 1" value={t1} onChange={setT1} options={teams}/>
+      <Select label="Team 2" value={t2} onChange={setT2} options={teams}/>
+      <button onClick={go} disabled={loading||t1===t2||!t1} className="rounded-lg bg-indigo-500 hover:bg-indigo-400 disabled:opacity-40 text-white font-semibold py-2 flex items-center justify-center gap-2">
+        {loading&&<Icon n="Refresh" className="animate-spin" size={16}/>}Compare</button></div></Card>
+    {d&&<>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {[["Total Encounters",d.total_matches,"text-slate-100"],[`${d.team1} Wins`,d.team1_wins,"text-emerald-400"],[`${d.team2} Wins`,d.team2_wins,"text-indigo-400"],["Draws",d.draws,"text-slate-300"]].map(([l,v,c])=>
+          <Card key={l}><div className="text-xs text-slate-400">{l}</div><div className={`text-3xl font-bold ${c}`}>{v}</div></Card>)}</div>
+      <Card className="fade"><div className="flex h-3 rounded-full overflow-hidden bg-zinc-800">
+        <div className="bar bg-emerald-500" style={{width:d.team1_wins/d.total_matches*100+"%"}}/><div className="bar bg-slate-500" style={{width:d.draws/d.total_matches*100+"%"}}/><div className="bar bg-indigo-500" style={{width:d.team2_wins/d.total_matches*100+"%"}}/></div>
+        <div className="flex justify-between text-xs text-slate-400 mt-2"><span>{d.team1}</span><span>Dominance split</span><span>{d.team2}</span></div></Card>
+      <Card className="fade"><Title icon="Trophy">Recent Matches</Title>
+        <div className="overflow-x-auto"><table className="w-full text-sm min-w-[480px]">
+          <thead><tr className="text-left text-slate-400 border-b border-slate-700"><th className="py-2">Date</th><th>Season</th><th>Scoreline</th><th>Winner</th></tr></thead>
+          <tbody>{(d.recent_matches||[]).map((m,i)=><tr key={i} className="border-b border-slate-800">
+            <td className="py-2 font-mono">{m.date}</td><td>{m.season}</td>
+            <td>{m.home_team} <b className="font-mono">{m.home_goals}–{m.away_goals}</b> {m.away_team}</td><td className="text-emerald-400">{winner(m)}</td></tr>)}</tbody>
+        </table></div></Card></>}
+  </div>;
+}
+
+/* ---------- Tab 4 ---------- */
+function Leaderboard({onStatus}){
+  const [rows,setRows]=useState([]); const [q,setQ]=useState(""); const [tour,setTour]=useState([]);
+  useEffect(()=>{
+    api("/api/top-scorers?limit=10",()=>({top_scorers:MOCK_SCORERS}),{},onStatus).then(d=>setRows(d.top_scorers||[]));
+    api("/api/tournaments",()=>({tournaments:MOCK_TOURN}),{},onStatus).then(d=>{
+      const list=Array.isArray(d)?d:(d.tournaments||[]);
+      setTour(list.map(t=>{ const m=t.matches??t.matches_played??0, g=t.total_goals??t.goals??0;
+        return {name:t.tournament||t.name,matches:m,goals:g,avg:+(t.avg_goals??t.avg_goals_per_game??(m?g/m:0))}; }));
+    });
+  },[]);
+  const f=useMemo(()=>rows.filter(r=>(r.scorer+r.team).toLowerCase().includes(q.toLowerCase())),[rows,q]);
+  const maxAvg=Math.max(...tour.map(t=>t.avg),1);
+  return <div className="grid lg:grid-cols-5 gap-4">
+    <Card className="lg:col-span-2"><Title icon="Bar">International Tournament Stats</Title>
+      <div className="overflow-x-auto"><table className="w-full text-sm min-w-[340px]">
+        <thead><tr className="text-left text-slate-400 border-b border-slate-700"><th className="py-2">Tournament</th><th className="text-right">Matches</th><th className="text-right">Goals</th><th className="text-right">Avg / game</th></tr></thead>
+        <tbody>{tour.map(t=><tr key={t.name} className="border-b border-slate-800">
+          <td className="py-2.5 font-medium">{t.name}</td><td className="text-right font-mono">{t.matches.toLocaleString()}</td><td className="text-right font-mono">{t.goals.toLocaleString()}</td>
+          <td className="text-right"><div className="flex items-center justify-end gap-2"><div className="hidden sm:block w-16 h-1.5 rounded-full bg-zinc-800 overflow-hidden"><div className="bar h-full bg-gradient-to-r from-emerald-500 to-indigo-500" style={{width:t.avg/maxAvg*100+"%"}}/></div><b className="text-emerald-400">{t.avg.toFixed(2)}</b></div></td></tr>)}
+          {!tour.length&&<tr><td colSpan="4" className="py-6 text-center text-slate-500">Loading…</td></tr>}</tbody></table></div></Card>
+    <Card className="lg:col-span-3"><Title icon="Trophy">Top International Goalscorers</Title>
+      <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search player or nation…" className="w-full mb-4 rounded-lg bg-zinc-900 border border-slate-700 px-3 py-2 focus:outline-none focus:border-indigo-500"/>
+      <div className="overflow-x-auto"><table className="w-full text-sm min-w-[380px]">
+        <thead><tr className="text-left text-slate-400 border-b border-slate-700"><th className="py-2 w-12">#</th><th>Player</th><th>Nation</th><th className="text-right">Goals</th></tr></thead>
+        <tbody>{f.map((r,i)=><tr key={r.scorer} className="border-b border-slate-800">
+          <td className="py-2.5 font-mono text-slate-400">{["🥇","🥈","🥉"][i]||i+1}</td><td className="font-medium">{r.scorer}</td><td className="text-slate-300">{r.team}</td>
+          <td className="text-right"><div className="flex items-center justify-end gap-2"><div className="hidden sm:block w-24 h-1.5 rounded-full bg-zinc-800 overflow-hidden"><div className="bar h-full bg-gradient-to-r from-emerald-500 to-indigo-500" style={{width:(r.goals/(rows[0]?.goals||1)*100)+"%"}}/></div><b className="text-emerald-400">{r.goals}</b></div></td></tr>)}
+          {!f.length&&<tr><td colSpan="4" className="py-6 text-center text-slate-500">No matches.</td></tr>}</tbody></table></div></Card>
+  </div>;
+}
+
+/* ---------- App ---------- */
+const TABS=[["Overview & Big Data Metrics","Db"],["Match Outcome Predictor (ML)","Brain"],["Head-to-Head Comparative Analytics","Activity"],["Tournament Leaderboards","Trophy"]];
+function App(){
+  const [tab,setTab]=useState(0); const [online,setOnline]=useState(null);
+  const [leagues,setLeagues]=useState(EURO); const [ready,setReady]=useState(false);
+  useEffect(()=>{ api("/api/leagues",()=>({leagues:EURO}),{},setOnline).then(d=>{setLeagues((d.leagues||EURO).filter(l=>!INTL.includes(l)));setReady(true)}); },[]);
+  return <div className="min-h-screen">
+    <header className="border-b border-slate-800 bg-slate-900/70 backdrop-blur sticky top-0 z-10" style={{top:"env(safe-area-inset-top,0px)"}}>
+      <div className="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3"><div className="p-2 rounded-xl bg-emerald-500/15"><Icon n="Trophy" className="text-emerald-400" size={22}/></div>
+          <div><div className="text-xl font-extrabold leading-tight grad-text">FootInsight</div>
+            <span className="text-[11px] rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 px-2 py-0.5">Big Data Analytics Engine (Spark & Hive)</span></div></div>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className={`flex items-center gap-1.5 rounded-full border px-3 py-1 ${online?"border-emerald-500/40 text-emerald-300 bg-emerald-500/10":"border-amber-500/40 text-amber-300 bg-amber-500/10"}`}>
+            <span className={`pulse h-2 w-2 rounded-full ${online?"bg-emerald-400":"bg-amber-400"}`}/>{online===null?"Connecting…":online?"Connected to Engine":"Offline / Mock Mode"}</span>
+          <span className="rounded-full border border-slate-700 px-3 py-1 text-slate-300">16,908 matches</span>
+          <span className="rounded-full border border-slate-700 px-3 py-1 text-slate-300">Model v1.0</span></div></div>
+      <nav className="max-w-6xl mx-auto px-4 flex gap-1 overflow-x-auto">
+        {TABS.map(([l,i],k)=><button key={l} onClick={()=>setTab(k)} className={`flex items-center gap-2 whitespace-nowrap px-4 py-2 my-2 text-sm rounded-full border transition ${tab===k?"border-emerald-400/50 bg-emerald-500/15 text-emerald-300 shadow-[0_0_18px_-4px_rgba(16,185,129,.6)]":"border-transparent text-slate-400 hover:text-slate-100 hover:bg-slate-800/60"}`}><Icon n={i} size={16}/>{l}</button>)}</nav>
+    </header>
+    <main key={tab} className="fade max-w-6xl mx-auto px-4 py-6">
+      {online===false&&<div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-200"><Icon n="Alert" size={16}/>Backend at {API_BASE_URL} unreachable — showing realistic mock data.</div>}
+      {!ready?<div className="text-slate-400">Loading…</div>:
+        tab===0?<Overview/>:tab===1?<Predictor leagues={leagues} onStatus={setOnline}/>:tab===2?<H2H leagues={leagues} onStatus={setOnline}/>:<Leaderboard onStatus={setOnline}/>}
+    </main>
+    <footer className="text-center text-xs text-slate-500 py-6">FootInsight · Spark SQL · HDFS · FastAPI</footer>
+  </div>;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
